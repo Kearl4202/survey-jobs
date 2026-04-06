@@ -206,7 +206,7 @@ def api_upload():
     data = load_data()
     if project_id not in data:
         data[project_id] = {'name': project_id, 'created': datetime.now().isoformat(), 'jobs': {}}
-    job_id = base
+    job_id = fname  # use full filename so each file is always a unique card
     data[project_id]['jobs'][job_id] = {
         'filename': fname, 'uploaded': datetime.now().isoformat(),
         'point_count': len(points), 'code_counts': code_counts,
@@ -278,7 +278,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .search-bar input:focus{border-color:#2a7de1;background:#fff}
 .list-scroll{flex:1;overflow-y:auto;padding:10px}
 .project-block{background:#fff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;margin-bottom:12px}
-.project-header{padding:11px 13px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f3f4f6}
+.project-header{padding:11px 13px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f3f4f6;cursor:pointer;user-select:none}
+.project-arrow{font-size:10px;color:#9ca3af;transition:transform .2s;flex-shrink:0}
+.project-arrow.open{transform:rotate(90deg)}
 .project-icon{width:34px;height:34px;border-radius:8px;background:#e8f0fb;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
 .project-name{font-size:13px;font-weight:600;color:#1a1a2e}
 .project-meta{font-size:11px;color:#6b7280;margin-top:1px}
@@ -443,59 +445,89 @@ function renderList(){
         `<span class="badge badge-code" style="${badgeStyle(code)}">${cnt} ${code}</span>`).join('');
       const lines = job.line_names&&job.line_names.length
         ? `<div class="job-lines">&#128205; ${job.line_names.join(', ')}</div>` : '';
+      const safeJid = encodeURIComponent(jid);
       return `<div class="job-card">
-        <div class="job-info" onclick="openMap('${pid}','${encodeURIComponent(jid)}')">
+        <div class="job-info" onclick="openJobMap('${pid}','${safeJid}')">
           <div class="job-name">${jid}</div>
           <div class="job-date">${fmtDate(job.uploaded)} &middot; ${job.point_count} pts</div>
           ${lines}
           <div class="badges">${badges}</div>
         </div>
         <div class="job-actions">
-          <button class="job-map-btn" onclick="openMap('${pid}','${encodeURIComponent(jid)}')">Map</button>
+          <button class="job-map-btn" onclick="openJobMap('${pid}','${safeJid}')">Map</button>
           <button class="job-kmz-btn" onclick="dlJobKmz('${pid}','${jid}')">KMZ</button>
           <button class="job-del-btn" onclick="delJob('${pid}','${jid}')">Del</button>
         </div>
       </div>`;
     }).join('');
 
+    const safePid = pid.replace(/'/g,"\\'");
     return `<div class="project-block">
-      <div class="project-header">
+      <div class="project-header" onclick="toggleProject('${safePid}')">
         <div style="display:flex;align-items:center;gap:9px;flex:1;min-width:0">
+          <div class="project-arrow" id="arrow-${pid}">&#9654;</div>
           <div class="project-icon">&#128193;</div>
           <div style="min-width:0">
             <div class="project-name">${pid}</div>
             <div class="project-meta">${jobs.length} job${jobs.length!==1?'s':''} &middot; ${totalPts} pts total</div>
           </div>
         </div>
-        <button class="proj-kmz-btn" onclick="dlProjectKmz('${pid}')">Full KMZ</button>
+        <div style="display:flex;gap:5px;flex-shrink:0" onclick="event.stopPropagation()">
+          <button class="job-map-btn" onclick="openProjectMap('${safePid}')">Map</button>
+          <button class="proj-kmz-btn" onclick="dlProjectKmz('${safePid}')">KMZ</button>
+          <button class="job-del-btn" onclick="delProject('${safePid}')">Del</button>
+        </div>
       </div>
-      ${jobCards}
+      <div class="job-list" id="jobs-${pid}" style="display:none">
+        ${jobCards}
+      </div>
     </div>`;
   }).join('');
 }
 
-async function openMap(pid, jobIdEncoded){
+function toggleProject(pid){
+  const jobs = document.getElementById(`jobs-${pid}`);
+  const arrow = document.getElementById(`arrow-${pid}`);
+  if(!jobs) return;
+  const open = jobs.style.display === 'block';
+  jobs.style.display = open ? 'none' : 'block';
+  arrow.classList.toggle('open', !open);
+}
+
+async function openProjectMap(pid){
+  toast('Loading map...');
+  const data = DB[pid];
+  if(!data) return;
+  const allPoints = Object.values(data.jobs||{}).flatMap(j=>j.points||[]);
+  if(!allPoints.length){ toast('No points in this project'); return; }
+  currentPoints = allPoints;
+  activeFilters = {};
+  showMapView(pid);
+}
+
+async function openJobMap(pid, jobIdEncoded){
   const jid = decodeURIComponent(jobIdEncoded);
   toast('Loading map...');
   const r = await fetch(`/api/job/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`);
   const job = await r.json();
   if(job.error){ toast('Error: '+job.error); return; }
-
   currentPoints = job.points || [];
+  activeFilters = {};
+  showMapView(jid);
+}
 
+function showMapView(title){
   document.getElementById('listView').style.display = 'none';
   document.getElementById('mapView').style.display = 'flex';
   document.getElementById('backBtn').style.display = 'block';
   document.getElementById('uploadBtn').style.display = 'none';
-  document.getElementById('topTitle').textContent = jid;
-
+  document.getElementById('topTitle').textContent = title;
   if(!MAP){
     MAP = L.map('map', {zoomControl:true});
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
       attribution:'&copy; OpenStreetMap',maxZoom:22
     }).addTo(MAP);
   }
-
   plotPoints();
   renderFilterBar();
 }
@@ -614,6 +646,16 @@ function dlJobKmz(pid,jid){
   window.location.href=`/api/kmz/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`;
   toast('Downloading job KMZ...');
 }
+async function delProject(pid){
+  if(!confirm(`Delete entire project ${pid} and all its jobs?`)) return;
+  const jobs = Object.keys(DB[pid]?.jobs||{});
+  for(const jid of jobs){
+    await fetch(`/api/delete/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`,{method:'DELETE'});
+  }
+  DB = await (await fetch('/api/projects')).json();
+  renderList(); toast('Project deleted');
+}
+
 async function delJob(pid,jid){
   if(!confirm(`Delete ${jid}?`)) return;
   await fetch(`/api/delete/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`,{method:'DELETE'});
