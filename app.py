@@ -291,10 +291,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .job-lines{font-size:11px;color:#6b7280;margin-top:2px}
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:500}
-.badge-weld{background:#fde8e8;color:#9b1c1c}
-.badge-fitting{background:#fef3c7;color:#78350f}
-.badge-topo{background:#d1fae5;color:#065f46}
-.badge-misc{background:#f3f4f6;color:#4b5563}
+.badge-code{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:500}
 .job-actions{display:flex;flex-direction:column;gap:4px;flex-shrink:0}
 .job-map-btn{background:#e8f0fb;color:#1a56db;border:1px solid #bfdbfe;border-radius:6px;padding:4px 8px;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap}
 .job-kmz-btn{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;border-radius:6px;padding:4px 8px;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap}
@@ -309,12 +306,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .map-btn{width:44px;height:44px;border-radius:22px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
 .locate-btn{background:#2a7de1;color:#fff}
 .filter-bar{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;z-index:400}
-.filter-pill{font-size:11px;padding:4px 10px;border-radius:12px;border:1.5px solid transparent;cursor:pointer;font-weight:500;opacity:.5;transition:opacity .15s}
+.filter-pill{font-size:11px;padding:4px 10px;border-radius:12px;border:1.5px solid transparent;cursor:pointer;font-weight:500;opacity:.4;transition:opacity .15s}
 .filter-pill.on{opacity:1}
-.pill-weld{background:#fde8e8;color:#9b1c1c;border-color:#fca5a5}
-.pill-fitting{background:#fef3c7;color:#78350f;border-color:#fcd34d}
-.pill-topo{background:#d1fae5;color:#065f46;border-color:#6ee7b7}
-.pill-misc{background:#f3f4f6;color:#4b5563;border-color:#d1d5db}
 
 /* popup */
 .leaflet-popup-content{font-size:13px;line-height:1.6;min-width:200px}
@@ -368,32 +361,39 @@ let DB = {};
 let MAP = null;
 let markers = [];
 let locMarker = null;
-let activeFilters = {weld:true, fitting:true, topo:true, misc:true};
+let activeFilters = {};
 let currentPoints = [];
 
-const PIN_COLORS = {
+const KNOWN_COLORS = {
   weld:    '#e24b4a',
   fitting: '#f59e0b',
   topo:    '#22c55e',
-  misc:    '#9ca3af'
 };
+const EXTRA_PALETTE = [
+  '#8b5cf6','#06b6d4','#f97316','#ec4899',
+  '#14b8a6','#6366f1','#84cc16','#f43f5e',
+  '#0ea5e9','#a855f7','#10b981','#fb923c'
+];
+const codeColorMap = {};
 
-function styleId(code){
+function codeColor(code){
+  if(codeColorMap[code]) return codeColorMap[code];
   const c = (code||'').toLowerCase();
-  if(['weld','tie-in','seam','butt'].some(w=>c.includes(w))) return 'weld';
-  if(['fit','elbow','tee','valve','bend','flange','cap','coupl','reducer'].some(w=>c.includes(w))) return 'fitting';
-  if(['topo','ground','surface','contour','shot','toe','top'].some(w=>c.includes(w))) return 'topo';
-  return 'misc';
+  if(['weld','tie-in','seam','butt'].some(w=>c.includes(w))) return codeColorMap[code]=KNOWN_COLORS.weld;
+  if(['fit','elbow','tee','valve','bend','flange','cap','coupl','reducer'].some(w=>c.includes(w))) return codeColorMap[code]=KNOWN_COLORS.fitting;
+  if(['topo','ground','surface','contour','shot','toe','top'].some(w=>c.includes(w))) return codeColorMap[code]=KNOWN_COLORS.topo;
+  const used = Object.values(codeColorMap);
+  const next = EXTRA_PALETTE.find(c=>!used.includes(c)) || EXTRA_PALETTE[used.length % EXTRA_PALETTE.length];
+  return codeColorMap[code] = next;
 }
 
-function makeIcon(type){
-  const color = PIN_COLORS[type];
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">
-    <path d="M12 0C5.4 0 0 5.4 0 12c0 7.2 12 20 12 20s12-12.8 12-20C24 5.4 18.6 0 12 0z" fill="${color}" stroke="#fff" stroke-width="1.5"/>
-    <circle cx="12" cy="12" r="5" fill="#fff" opacity=".85"/>
+function makeIcon(code){
+  const color = codeColor(code);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+    <circle cx="9" cy="9" r="8" fill="${color}" stroke="#fff" stroke-width="2.5"/>
   </svg>`;
   return L.divIcon({
-    html: svg, className: '', iconSize:[24,32], iconAnchor:[12,32], popupAnchor:[0,-34]
+    html: svg, className: '', iconSize:[18,18], iconAnchor:[9,9], popupAnchor:[0,-12]
   });
 }
 
@@ -404,7 +404,13 @@ async function loadProjects(){
 }
 
 function badgeClass(code){
-  return 'badge-' + styleId(code);
+  return 'badge-code';
+}
+
+function badgeStyle(code){
+  const color = codeColor(code);
+  const r=parseInt(color.slice(1,3),16), g=parseInt(color.slice(3,5),16), b=parseInt(color.slice(5,7),16);
+  return `background:rgba(${r},${g},${b},.12);color:${color};border:1px solid rgba(${r},${g},${b},.35)`;
 }
 
 function fmtDate(iso){
@@ -434,7 +440,7 @@ function renderList(){
 
     const jobCards = filteredJobs.sort((a,b)=>b[1].uploaded.localeCompare(a[1].uploaded)).map(([jid,job])=>{
       const badges = Object.entries(job.code_counts||{}).map(([code,cnt])=>
-        `<span class="badge ${badgeClass(code)}">${cnt} ${code}</span>`).join('');
+        `<span class="badge badge-code" style="${badgeStyle(code)}">${cnt} ${code}</span>`).join('');
       const lines = job.line_names&&job.line_names.length
         ? `<div class="job-lines">&#128205; ${job.line_names.join(', ')}</div>` : '';
       return `<div class="job-card">
@@ -498,12 +504,12 @@ function plotPoints(){
   markers.forEach(m=>MAP.removeLayer(m));
   markers = [];
 
-  const pts = currentPoints.filter(p=>activeFilters[styleId(p.code)]);
+  const pts = currentPoints.filter(p=> activeFilters[p.code] !== false);
   if(!pts.length) return;
 
   pts.forEach(p=>{
-    const sid = styleId(p.code);
-    const rows = [`<div class="pop-title">${p.name}</div>`,
+    const color = codeColor(p.code);
+    const rows = [`<div class="pop-title" style="color:${color}">${p.name}</div>`,
                   `<b>Code:</b> ${p.code}`];
     if(p.ts) rows.push(`<b>Time:</b> ${p.ts.replace('T',' ')}`);
     rows.push(`<b>Elev:</b> ${p.elev.toFixed(3)} m`);
@@ -514,7 +520,7 @@ function plotPoints(){
       rows.push('<hr/>');
       Object.entries(p.attrs).forEach(([k,v])=>rows.push(`<b>${k}:</b> ${v}`));
     }
-    const m = L.marker([p.lat, p.lon], {icon: makeIcon(sid)})
+    const m = L.marker([p.lat, p.lon], {icon: makeIcon(p.code)})
       .bindPopup(rows.join('<br/>'), {maxWidth:280})
       .addTo(MAP);
     markers.push(m);
@@ -527,17 +533,28 @@ function plotPoints(){
 }
 
 function renderFilterBar(){
-  const counts = {weld:0,fitting:0,topo:0,misc:0};
-  currentPoints.forEach(p=>counts[styleId(p.code)]++);
-  const labels = {weld:'Welds',fitting:'Fittings',topo:'Topo',misc:'Misc'};
+  const counts = {};
+  currentPoints.forEach(p=>counts[p.code]=(counts[p.code]||0)+1);
+  if(!Object.keys(activeFilters).length){
+    Object.keys(counts).forEach(code=>activeFilters[code]=true);
+  }
   document.getElementById('filterBar').innerHTML = Object.entries(counts)
-    .filter(([,c])=>c>0)
-    .map(([type,cnt])=>`<span class="filter-pill pill-${type} ${activeFilters[type]?'on':''}"
-      onclick="toggleFilter('${type}')">${labels[type]} ${cnt}</span>`).join('');
+    .map(([code,cnt])=>{
+      const color = codeColor(code);
+      const on = activeFilters[code] !== false;
+      const r=parseInt(color.slice(1,3),16), g=parseInt(color.slice(3,5),16), b=parseInt(color.slice(5,7),16);
+      const bg = on ? `rgba(${r},${g},${b},.15)` : 'rgba(128,128,128,.08)';
+      const bc = on ? color : '#aaa';
+      const tc = on ? color : '#aaa';
+      return `<span class="filter-pill ${on?'on':''}"
+        style="background:${bg};color:${tc};border-color:${bc}"
+        onclick="toggleFilter('${code.replace(/'/g,"\\'")}')">
+        &#9679; ${code} ${cnt}</span>`;
+    }).join('');
 }
 
-function toggleFilter(type){
-  activeFilters[type] = !activeFilters[type];
+function toggleFilter(code){
+  activeFilters[code] = activeFilters[code] === false ? true : false;
   renderFilterBar();
   plotPoints();
 }
