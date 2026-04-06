@@ -1,4 +1,4 @@
-import os, json, zipfile, re
+import os, json, zipfile, re, io
 from datetime import datetime
 from flask import Flask, request, jsonify, send_file, render_template_string
 import xml.etree.ElementTree as ET
@@ -10,7 +10,6 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
 
-# ── persistence ────────────────────────────────────────────────────────────
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE) as f:
@@ -21,7 +20,6 @@ def save_data(d):
     with open(DATA_FILE, 'w') as f:
         json.dump(d, f, indent=2)
 
-# ── JXL parsing ────────────────────────────────────────────────────────────
 _tc = {}
 def grid_to_latlon(north, east, epsg=6583):
     if epsg not in _tc:
@@ -53,7 +51,6 @@ def parse_jxl(filepath):
             try: epsg = int(e)
             except: pass
 
-    # Collect all line names from attributes
     line_names = set()
     points = []
     for rec in fb:
@@ -104,7 +101,6 @@ def parse_jxl(filepath):
 
     return points, list(line_names), epsg
 
-# ── KMZ building ───────────────────────────────────────────────────────────
 STYLES = {
     'weld':    ('ff1400ff', 'http://maps.google.com/mapfiles/kml/paddle/red-circle.png'),
     'fitting': ('ff00d7ff', 'http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png'),
@@ -133,7 +129,7 @@ def placemark_kml(p, indent='      '):
     desc = '<br/>'.join(rows)
     sid = style_id(p['code'])
     return (f'{indent}<Placemark>\n'
-            f'{indent}  <name>{p["name"]}</name>\n'
+            f'{indent}  <n>{p["name"]}</n>\n'
             f'{indent}  <description><![CDATA[{desc}]]></description>\n'
             f'{indent}  <styleUrl>#{sid}</styleUrl>\n'
             f'{indent}  <Point><coordinates>{p["lon"]},{p["lat"]},{p["elev"]}</coordinates></Point>\n'
@@ -148,36 +144,29 @@ def style_defs():
     return '\n'.join(lines)
 
 def build_project_kmz(project_id, data, job_id=None):
-    """Build KMZ for whole project or a single job."""
     proj = data.get(project_id, {})
     jobs = proj.get('jobs', {})
     if job_id:
         jobs = {job_id: jobs[job_id]} if job_id in jobs else {}
-
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<kml xmlns="http://www.opengis.net/kml/2.2">',
-             '<Document>', f'  <name>{project_id}</name>', style_defs()]
-
-    folder_label = proj.get('name', project_id)
-    lines.append(f'  <Folder><name>{folder_label}</name><open>1</open>')
-
+             '<Document>', f'  <n>{project_id}</n>', style_defs()]
+    lines.append(f'  <Folder><n>{proj.get("name", project_id)}</n><open>1</open>')
     for jid, job in sorted(jobs.items()):
         pts = job.get('points', [])
-        lines.append(f'    <Folder><name>{jid}  ({len(pts)} pts)</name>')
+        lines.append(f'    <Folder><n>{jid}  ({len(pts)} pts)</n>')
         by_code = {}
         for p in pts:
             by_code.setdefault(p['code'], []).append(p)
         for code_name, cpts in sorted(by_code.items()):
-            lines.append(f'      <Folder><name>{code_name} ({len(cpts)})</name>')
+            lines.append(f'      <Folder><n>{code_name} ({len(cpts)})</n>')
             for p in cpts:
                 lines.append(placemark_kml(p))
             lines.append('      </Folder>')
         lines.append('    </Folder>')
-
     lines += ['  </Folder>', '</Document>', '</kml>']
     return '\n'.join(lines)
 
-# ── routes ─────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template_string(HTML)
@@ -186,61 +175,48 @@ def index():
 def api_projects():
     return jsonify(load_data())
 
+@app.route('/api/job/<project_id>/<path:job_id>')
+def api_job(project_id, job_id):
+    data = load_data()
+    proj = data.get(project_id, {})
+    job = proj.get('jobs', {}).get(job_id)
+    if not job:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(job)
+
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file'}), 400
     f = request.files['file']
     fname = f.filename
-    # Project ID = first 9 chars of filename (digits, letters, underscores)
     base = os.path.splitext(fname)[0]
     project_id = re.sub(r'[^A-Za-z0-9_-]', '', base)[:9].rstrip('_-')
-
     save_path = os.path.join(UPLOAD_DIR, fname)
     f.save(save_path)
-
     try:
         points, line_names, epsg = parse_jxl(save_path)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
-
     if not points:
         return jsonify({'error': 'No points found in file'}), 400
-
-    # Count by code
     code_counts = {}
     for p in points:
         code_counts[p['code']] = code_counts.get(p['code'], 0) + 1
-
     data = load_data()
     if project_id not in data:
-        data[project_id] = {
-            'name': project_id,
-            'created': datetime.now().isoformat(),
-            'jobs': {}
-        }
-
-    job_id = os.path.splitext(fname)[0]
+        data[project_id] = {'name': project_id, 'created': datetime.now().isoformat(), 'jobs': {}}
+    job_id = base
     data[project_id]['jobs'][job_id] = {
-        'filename': fname,
-        'uploaded': datetime.now().isoformat(),
-        'point_count': len(points),
-        'code_counts': code_counts,
-        'line_names': line_names,
-        'epsg': epsg,
-        'points': points
+        'filename': fname, 'uploaded': datetime.now().isoformat(),
+        'point_count': len(points), 'code_counts': code_counts,
+        'line_names': line_names, 'epsg': epsg, 'points': points
     }
     save_data(data)
-
     total = sum(j['point_count'] for j in data[project_id]['jobs'].values())
-    return jsonify({
-        'project_id': project_id,
-        'job_id': job_id,
-        'point_count': len(points),
-        'project_total': total,
-        'code_counts': code_counts,
-        'line_names': line_names
-    })
+    return jsonify({'project_id': project_id, 'job_id': job_id,
+                    'point_count': len(points), 'project_total': total,
+                    'code_counts': code_counts, 'line_names': line_names})
 
 @app.route('/api/kmz/<project_id>')
 def api_kmz_project(project_id):
@@ -248,7 +224,6 @@ def api_kmz_project(project_id):
     if project_id not in data:
         return jsonify({'error': 'Not found'}), 404
     kml = build_project_kmz(project_id, data)
-    import io
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('doc.kml', kml.encode('utf-8'))
@@ -262,7 +237,6 @@ def api_kmz_job(project_id, job_id):
     if project_id not in data:
         return jsonify({'error': 'Not found'}), 404
     kml = build_project_kmz(project_id, data, job_id=job_id)
-    import io
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('doc.kml', kml.encode('utf-8'))
@@ -281,32 +255,37 @@ def api_delete_job(project_id, job_id):
         save_data(data)
     return jsonify({'ok': True})
 
-# ── HTML (single page app) ─────────────────────────────────────────────────
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Survey Jobs</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;min-height:100vh;color:#1a1a2e}
-.topbar{background:#1a2332;color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.topbar h1{font-size:17px;font-weight:600;letter-spacing:.3px}
-.upload-btn{background:#2a7de1;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:500;cursor:pointer}
-.search-bar{padding:10px 14px;background:#fff;border-bottom:1px solid #e5e7eb}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.topbar{background:#1a2332;color:#fff;padding:12px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;z-index:200}
+.back-btn{background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;padding:0 4px;line-height:1}
+.topbar h1{font-size:16px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upload-btn{background:#2a7de1;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;flex-shrink:0}
+
+/* ── LIST VIEW ── */
+#listView{flex:1;overflow-y:auto;display:flex;flex-direction:column}
+.search-bar{padding:10px 12px;background:#fff;border-bottom:1px solid #e5e7eb;flex-shrink:0}
 .search-bar input{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 12px;font-size:14px;outline:none;background:#f9fafb}
 .search-bar input:focus{border-color:#2a7de1;background:#fff}
-.section-label{padding:12px 14px 6px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.8px}
-.project-block{margin:0 10px 14px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden}
-.project-header{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f3f4f6;cursor:pointer}
-.project-header-left{display:flex;align-items:center;gap:10px}
-.project-icon{width:36px;height:36px;border-radius:8px;background:#e8f0fb;display:flex;align-items:center;justify-content:center;font-size:15px}
-.project-name{font-size:14px;font-weight:600;color:#1a1a2e}
+.list-scroll{flex:1;overflow-y:auto;padding:10px}
+.project-block{background:#fff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;margin-bottom:12px}
+.project-header{padding:11px 13px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f3f4f6}
+.project-icon{width:34px;height:34px;border-radius:8px;background:#e8f0fb;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.project-name{font-size:13px;font-weight:600;color:#1a1a2e}
 .project-meta{font-size:11px;color:#6b7280;margin-top:1px}
-.project-kmz-btn{background:#2a7de1;color:#fff;border:none;border-radius:7px;padding:5px 10px;font-size:11px;font-weight:500;cursor:pointer;white-space:nowrap}
-.job-card{padding:11px 14px;border-bottom:1px solid #f3f4f6;display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.proj-kmz-btn{background:#2a7de1;color:#fff;border:none;border-radius:7px;padding:5px 10px;font-size:11px;font-weight:500;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.job-card{padding:10px 13px;border-bottom:1px solid #f3f4f6;display:flex;align-items:flex-start;gap:8px}
 .job-card:last-child{border-bottom:none}
+.job-info{flex:1;min-width:0;cursor:pointer}
 .job-name{font-size:12px;font-weight:500;color:#374151;word-break:break-all}
 .job-date{font-size:11px;color:#9ca3af;margin-top:2px}
 .job-lines{font-size:11px;color:#6b7280;margin-top:2px}
@@ -316,17 +295,38 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .badge-fitting{background:#fef3c7;color:#78350f}
 .badge-topo{background:#d1fae5;color:#065f46}
 .badge-misc{background:#f3f4f6;color:#4b5563}
-.job-actions{display:flex;flex-direction:column;gap:5px;flex-shrink:0}
-.job-kmz-btn{background:#f0f7ff;color:#2a7de1;border:1px solid #bfdbfe;border-radius:6px;padding:4px 8px;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap}
+.job-actions{display:flex;flex-direction:column;gap:4px;flex-shrink:0}
+.job-map-btn{background:#e8f0fb;color:#1a56db;border:1px solid #bfdbfe;border-radius:6px;padding:4px 8px;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap}
+.job-kmz-btn{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;border-radius:6px;padding:4px 8px;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap}
 .job-del-btn{background:#fff5f5;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:4px 8px;font-size:10px;cursor:pointer}
 .empty{text-align:center;padding:48px 24px;color:#9ca3af}
-.empty-icon{font-size:40px;margin-bottom:12px}
-.empty p{font-size:14px}
-.drop-overlay{display:none;position:fixed;inset:0;background:rgba(42,125,225,.12);border:3px dashed #2a7de1;z-index:200;align-items:center;justify-content:center;font-size:20px;font-weight:600;color:#2a7de1}
+.empty p{font-size:14px;margin-top:8px}
+
+/* ── MAP VIEW ── */
+#mapView{flex:1;display:none;flex-direction:column;position:relative}
+#map{flex:1;z-index:1}
+.map-toolbar{position:absolute;bottom:16px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:400}
+.map-btn{width:44px;height:44px;border-radius:22px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.locate-btn{background:#2a7de1;color:#fff}
+.filter-bar{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;z-index:400}
+.filter-pill{font-size:11px;padding:4px 10px;border-radius:12px;border:1.5px solid transparent;cursor:pointer;font-weight:500;opacity:.5;transition:opacity .15s}
+.filter-pill.on{opacity:1}
+.pill-weld{background:#fde8e8;color:#9b1c1c;border-color:#fca5a5}
+.pill-fitting{background:#fef3c7;color:#78350f;border-color:#fcd34d}
+.pill-topo{background:#d1fae5;color:#065f46;border-color:#6ee7b7}
+.pill-misc{background:#f3f4f6;color:#4b5563;border-color:#d1d5db}
+
+/* popup */
+.leaflet-popup-content{font-size:13px;line-height:1.6;min-width:200px}
+.leaflet-popup-content b{color:#1a1a2e}
+.leaflet-popup-content hr{border:none;border-top:1px solid #e5e7eb;margin:6px 0}
+.pop-title{font-size:14px;font-weight:600;margin-bottom:4px;color:#1a1a2e}
+
+.drop-overlay{display:none;position:fixed;inset:0;background:rgba(42,125,225,.12);border:3px dashed #2a7de1;z-index:500;align-items:center;justify-content:center;font-size:20px;font-weight:600;color:#2a7de1}
 .drop-overlay.active{display:flex}
-.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a2332;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:300;opacity:0;transition:opacity .25s;pointer-events:none}
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a2332;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:600;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap}
 .toast.show{opacity:1}
-.spinner{display:none;width:16px;height:16px;border:2px solid #fff4;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin-left:8px}
+.spinner{display:none;width:14px;height:14px;border:2px solid #fff4;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin-left:6px;vertical-align:middle}
 @keyframes spin{to{transform:rotate(360deg)}}
 input[type=file]{display:none}
 </style>
@@ -336,79 +336,116 @@ input[type=file]{display:none}
 <div class="drop-overlay" id="dropOverlay">Drop JXL files here</div>
 <div class="toast" id="toast"></div>
 
-<div class="topbar">
-  <h1>Survey Jobs</h1>
-  <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
-    + Upload JXL <span class="spinner" id="spinner"></span>
+<div class="topbar" id="topbar">
+  <button class="back-btn" id="backBtn" style="display:none" onclick="showList()">&#8592;</button>
+  <h1 id="topTitle">Survey Jobs</h1>
+  <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
+    + Upload <span class="spinner" id="spinner"></span>
   </button>
 </div>
 
-<div class="search-bar">
-  <input type="text" id="searchInput" placeholder="Search projects or jobs..." oninput="render()">
+<!-- LIST -->
+<div id="listView">
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="Search projects or jobs..." oninput="renderList()">
+  </div>
+  <div class="list-scroll" id="listScroll"></div>
+</div>
+
+<!-- MAP -->
+<div id="mapView">
+  <div class="filter-bar" id="filterBar"></div>
+  <div id="map"></div>
+  <div class="map-toolbar">
+    <button class="map-btn locate-btn" onclick="locateMe()" title="Find me">&#x2316;</button>
+  </div>
 </div>
 
 <input type="file" id="fileInput" accept=".jxl,.jobxml,.xml" multiple onchange="uploadFiles(this.files)">
 
-<div id="content"></div>
-
 <script>
 let DB = {};
+let MAP = null;
+let markers = [];
+let locMarker = null;
+let activeFilters = {weld:true, fitting:true, topo:true, misc:true};
+let currentPoints = [];
+
+const PIN_COLORS = {
+  weld:    '#e24b4a',
+  fitting: '#f59e0b',
+  topo:    '#22c55e',
+  misc:    '#9ca3af'
+};
+
+function styleId(code){
+  const c = (code||'').toLowerCase();
+  if(['weld','tie-in','seam','butt'].some(w=>c.includes(w))) return 'weld';
+  if(['fit','elbow','tee','valve','bend','flange','cap','coupl','reducer'].some(w=>c.includes(w))) return 'fitting';
+  if(['topo','ground','surface','contour','shot','toe','top'].some(w=>c.includes(w))) return 'topo';
+  return 'misc';
+}
+
+function makeIcon(type){
+  const color = PIN_COLORS[type];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">
+    <path d="M12 0C5.4 0 0 5.4 0 12c0 7.2 12 20 12 20s12-12.8 12-20C24 5.4 18.6 0 12 0z" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+    <circle cx="12" cy="12" r="5" fill="#fff" opacity=".85"/>
+  </svg>`;
+  return L.divIcon({
+    html: svg, className: '', iconSize:[24,32], iconAnchor:[12,32], popupAnchor:[0,-34]
+  });
+}
 
 async function loadProjects(){
   const r = await fetch('/api/projects');
   DB = await r.json();
-  render();
+  renderList();
 }
 
 function badgeClass(code){
-  const c = code.toLowerCase();
-  if(['weld','tie-in','seam','butt'].some(w=>c.includes(w))) return 'badge-weld';
-  if(['fit','elbow','tee','valve','bend','flange','cap','coupl','reducer'].some(w=>c.includes(w))) return 'badge-fitting';
-  if(['topo','ground','surface','contour','shot','toe','top'].some(w=>c.includes(w))) return 'badge-topo';
-  return 'badge-misc';
+  return 'badge-' + styleId(code);
 }
 
 function fmtDate(iso){
   if(!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  return new Date(iso).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
 }
 
-function render(){
+function renderList(){
   const q = document.getElementById('searchInput').value.toLowerCase();
-  const content = document.getElementById('content');
-  const projects = Object.entries(DB).filter(([pid, proj])=>{
+  const el = document.getElementById('listScroll');
+  const projects = Object.entries(DB).filter(([pid,proj])=>{
     if(!q) return true;
     if(pid.toLowerCase().includes(q)) return true;
     return Object.keys(proj.jobs||{}).some(jid=>jid.toLowerCase().includes(q));
   });
 
   if(!projects.length){
-    content.innerHTML = `<div class="empty">
-      <div class="empty-icon">📡</div>
-      <p>${Object.keys(DB).length ? 'No results' : 'No jobs yet — upload a JXL file to get started'}</p>
-    </div>`;
+    el.innerHTML = `<div class="empty"><div style="font-size:40px">📡</div>
+      <p>${Object.keys(DB).length?'No results':'Upload a JXL file to get started'}</p></div>`;
     return;
   }
 
-  content.innerHTML = projects.sort((a,b)=>a[0].localeCompare(b[0])).map(([pid, proj])=>{
+  el.innerHTML = projects.sort((a,b)=>a[0].localeCompare(b[0])).map(([pid,proj])=>{
     const jobs = Object.entries(proj.jobs||{});
     const totalPts = jobs.reduce((s,[,j])=>s+j.point_count,0);
     const filteredJobs = q ? jobs.filter(([jid])=>jid.toLowerCase().includes(q)||pid.toLowerCase().includes(q)) : jobs;
 
-    const jobCards = filteredJobs.sort((a,b)=>b[1].uploaded.localeCompare(a[1].uploaded)).map(([jid, job])=>{
+    const jobCards = filteredJobs.sort((a,b)=>b[1].uploaded.localeCompare(a[1].uploaded)).map(([jid,job])=>{
       const badges = Object.entries(job.code_counts||{}).map(([code,cnt])=>
         `<span class="badge ${badgeClass(code)}">${cnt} ${code}</span>`).join('');
-      const lines = job.line_names && job.line_names.length
-        ? `<div class="job-lines">📍 ${job.line_names.join(', ')}</div>` : '';
+      const lines = job.line_names&&job.line_names.length
+        ? `<div class="job-lines">&#128205; ${job.line_names.join(', ')}</div>` : '';
       return `<div class="job-card">
-        <div style="flex:1;min-width:0">
+        <div class="job-info" onclick="openMap('${pid}','${encodeURIComponent(jid)}')">
           <div class="job-name">${jid}</div>
-          <div class="job-date">${fmtDate(job.uploaded)} · ${job.point_count} pts</div>
+          <div class="job-date">${fmtDate(job.uploaded)} &middot; ${job.point_count} pts</div>
           ${lines}
           <div class="badges">${badges}</div>
         </div>
         <div class="job-actions">
+          <button class="job-map-btn" onclick="openMap('${pid}','${encodeURIComponent(jid)}')">Map</button>
           <button class="job-kmz-btn" onclick="dlJobKmz('${pid}','${jid}')">KMZ</button>
           <button class="job-del-btn" onclick="delJob('${pid}','${jid}')">Del</button>
         </div>
@@ -416,76 +453,169 @@ function render(){
     }).join('');
 
     return `<div class="project-block">
-      <div class="project-header" onclick="">
-        <div class="project-header-left">
-          <div class="project-icon">🗂</div>
-          <div>
+      <div class="project-header">
+        <div style="display:flex;align-items:center;gap:9px;flex:1;min-width:0">
+          <div class="project-icon">&#128193;</div>
+          <div style="min-width:0">
             <div class="project-name">${pid}</div>
-            <div class="project-meta">${jobs.length} job${jobs.length!==1?'s':''} · ${totalPts} total pts</div>
+            <div class="project-meta">${jobs.length} job${jobs.length!==1?'s':''} &middot; ${totalPts} pts total</div>
           </div>
         </div>
-        <button class="project-kmz-btn" onclick="event.stopPropagation();dlProjectKmz('${pid}')">Full KMZ</button>
+        <button class="proj-kmz-btn" onclick="dlProjectKmz('${pid}')">Full KMZ</button>
       </div>
       ${jobCards}
     </div>`;
   }).join('');
 }
 
+async function openMap(pid, jobIdEncoded){
+  const jid = decodeURIComponent(jobIdEncoded);
+  toast('Loading map...');
+  const r = await fetch(`/api/job/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`);
+  const job = await r.json();
+  if(job.error){ toast('Error: '+job.error); return; }
+
+  currentPoints = job.points || [];
+
+  document.getElementById('listView').style.display = 'none';
+  document.getElementById('mapView').style.display = 'flex';
+  document.getElementById('backBtn').style.display = 'block';
+  document.getElementById('uploadBtn').style.display = 'none';
+  document.getElementById('topTitle').textContent = jid;
+
+  if(!MAP){
+    MAP = L.map('map', {zoomControl:true});
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      attribution:'&copy; OpenStreetMap',maxZoom:22
+    }).addTo(MAP);
+  }
+
+  plotPoints();
+  renderFilterBar();
+}
+
+function plotPoints(){
+  markers.forEach(m=>MAP.removeLayer(m));
+  markers = [];
+
+  const pts = currentPoints.filter(p=>activeFilters[styleId(p.code)]);
+  if(!pts.length) return;
+
+  pts.forEach(p=>{
+    const sid = styleId(p.code);
+    const rows = [`<div class="pop-title">${p.name}</div>`,
+                  `<b>Code:</b> ${p.code}`];
+    if(p.ts) rows.push(`<b>Time:</b> ${p.ts.replace('T',' ')}`);
+    rows.push(`<b>Elev:</b> ${p.elev.toFixed(3)} m`);
+    if(p.horiz){
+      try{ rows.push(`<b>Precision H/V:</b> ${parseFloat(p.horiz).toFixed(4)} / ${parseFloat(p.vert).toFixed(4)} m`); }catch(e){}
+    }
+    if(p.attrs && Object.keys(p.attrs).length){
+      rows.push('<hr/>');
+      Object.entries(p.attrs).forEach(([k,v])=>rows.push(`<b>${k}:</b> ${v}`));
+    }
+    const m = L.marker([p.lat, p.lon], {icon: makeIcon(sid)})
+      .bindPopup(rows.join('<br/>'), {maxWidth:280})
+      .addTo(MAP);
+    markers.push(m);
+  });
+
+  if(markers.length){
+    const group = L.featureGroup(markers);
+    MAP.fitBounds(group.getBounds().pad(0.15));
+  }
+}
+
+function renderFilterBar(){
+  const counts = {weld:0,fitting:0,topo:0,misc:0};
+  currentPoints.forEach(p=>counts[styleId(p.code)]++);
+  const labels = {weld:'Welds',fitting:'Fittings',topo:'Topo',misc:'Misc'};
+  document.getElementById('filterBar').innerHTML = Object.entries(counts)
+    .filter(([,c])=>c>0)
+    .map(([type,cnt])=>`<span class="filter-pill pill-${type} ${activeFilters[type]?'on':''}"
+      onclick="toggleFilter('${type}')">${labels[type]} ${cnt}</span>`).join('');
+}
+
+function toggleFilter(type){
+  activeFilters[type] = !activeFilters[type];
+  renderFilterBar();
+  plotPoints();
+}
+
+function locateMe(){
+  if(!navigator.geolocation){ toast('GPS not available on this device'); return; }
+  toast('Finding your location...');
+  navigator.geolocation.getCurrentPosition(pos=>{
+    const {latitude:lat, longitude:lon} = pos.coords;
+    if(locMarker) MAP.removeLayer(locMarker);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
+      <circle cx="10" cy="10" r="9" fill="#2a7de1" stroke="#fff" stroke-width="2"/>
+      <circle cx="10" cy="10" r="4" fill="#fff"/>
+    </svg>`;
+    locMarker = L.marker([lat,lon],{
+      icon: L.divIcon({html:svg,className:'',iconSize:[20,20],iconAnchor:[10,10]})
+    }).addTo(MAP).bindPopup('You are here');
+    MAP.setView([lat,lon], 17);
+    toast('Found you!');
+  }, err=>{
+    toast('Could not get location — check browser permissions');
+  },{enableHighAccuracy:true,timeout:10000});
+}
+
+function showList(){
+  document.getElementById('mapView').style.display = 'none';
+  document.getElementById('listView').style.display = 'flex';
+  document.getElementById('backBtn').style.display = 'none';
+  document.getElementById('uploadBtn').style.display = 'block';
+  document.getElementById('topTitle').textContent = 'Survey Jobs';
+}
+
 async function uploadFiles(files){
   if(!files.length) return;
-  const spinner = document.getElementById('spinner');
-  spinner.style.display = 'inline-block';
-  let uploaded = 0, errors = [];
+  document.getElementById('spinner').style.display = 'inline-block';
+  let uploaded=0, errors=[];
   for(const file of files){
-    const fd = new FormData();
-    fd.append('file', file);
+    const fd = new FormData(); fd.append('file',file);
     try{
-      const r = await fetch('/api/upload', {method:'POST', body:fd});
+      const r = await fetch('/api/upload',{method:'POST',body:fd});
       const d = await r.json();
       if(d.error){ errors.push(`${file.name}: ${d.error}`); continue; }
       DB = await (await fetch('/api/projects')).json();
-      render();
-      uploaded++;
-    } catch(e){ errors.push(file.name); }
+      renderList(); uploaded++;
+    }catch(e){ errors.push(file.name); }
   }
-  spinner.style.display = 'none';
+  document.getElementById('spinner').style.display = 'none';
   document.getElementById('fileInput').value = '';
-  if(errors.length) toast('Errors: '+errors.join(', '), 4000);
-  else toast(`✓ ${uploaded} file${uploaded!==1?'s':''} uploaded`);
+  toast(errors.length ? 'Errors: '+errors.join(', ') : `✓ ${uploaded} file${uploaded!==1?'s':''} uploaded`);
 }
 
 function dlProjectKmz(pid){
-  window.location.href = `/api/kmz/${encodeURIComponent(pid)}`;
+  window.location.href=`/api/kmz/${encodeURIComponent(pid)}`;
   toast('Downloading project KMZ...');
 }
-
-function dlJobKmz(pid, jid){
-  window.location.href = `/api/kmz/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`;
+function dlJobKmz(pid,jid){
+  window.location.href=`/api/kmz/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`;
   toast('Downloading job KMZ...');
 }
-
-async function delJob(pid, jid){
+async function delJob(pid,jid){
   if(!confirm(`Delete ${jid}?`)) return;
-  await fetch(`/api/delete/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`, {method:'DELETE'});
+  await fetch(`/api/delete/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`,{method:'DELETE'});
   DB = await (await fetch('/api/projects')).json();
-  render();
-  toast('Deleted');
+  renderList(); toast('Deleted');
 }
 
-function toast(msg, dur=2200){
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), dur);
+function toast(msg,dur=2500){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),dur);
 }
 
-// Drag and drop
-document.addEventListener('dragover', e=>{e.preventDefault(); document.getElementById('dropOverlay').classList.add('active')});
-document.addEventListener('dragleave', e=>{if(!e.relatedTarget) document.getElementById('dropOverlay').classList.remove('active')});
-document.addEventListener('drop', e=>{
+document.addEventListener('dragover',e=>{e.preventDefault();document.getElementById('dropOverlay').classList.add('active')});
+document.addEventListener('dragleave',e=>{if(!e.relatedTarget)document.getElementById('dropOverlay').classList.remove('active')});
+document.addEventListener('drop',e=>{
   e.preventDefault();
   document.getElementById('dropOverlay').classList.remove('active');
-  const files = [...e.dataTransfer.files].filter(f=>f.name.match(/\.(jxl|jobxml|xml)$/i));
+  const files=[...e.dataTransfer.files].filter(f=>f.name.match(/\.(jxl|jobxml|xml)$/i));
   if(files.length) uploadFiles(files);
 });
 
@@ -495,6 +625,6 @@ loadProjects();
 </html>"""
 
 if __name__ == '__main__':
-    print('\n  Survey Jobs app running!')
-    print('  Open in your browser: http://localhost:5000\n')
-    import os; app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    print(f'\n  Survey Jobs running at http://localhost:{port}\n')
+    app.run(debug=False, host='0.0.0.0', port=port)
