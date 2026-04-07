@@ -77,7 +77,8 @@ def parse_jxl(filepath):
         if lat is None: continue
 
         name = sub(rec, 'Name') or rec.get('ID', 'Unknown')
-        code = sub(rec, 'Code') or 'UNCODED'
+        code = sub(rec, 'Code')
+        if not code: continue  # skip base station / uncoded reference points
         ts   = rec.get('TimeStamp', '')
 
         attrs = {}
@@ -462,13 +463,14 @@ function renderList(){
     }).join('');
 
     const safePid = pid.replace(/'/g,"\\'");
+    const allLines = [...new Set(jobs.flatMap(([,j])=>j.line_names||[]))].join(', ');
     return `<div class="project-block">
       <div class="project-header" onclick="toggleProject('${safePid}')">
         <div style="display:flex;align-items:center;gap:9px;flex:1;min-width:0">
           <div class="project-arrow" id="arrow-${pid}">&#9654;</div>
           <div class="project-icon">&#128193;</div>
           <div style="min-width:0">
-            <div class="project-name">${pid}</div>
+            <div class="project-name">${pid}${allLines ? `<span style="font-weight:400;color:#6b7280;font-size:12px;margin-left:6px">${allLines}</span>` : ''}</div>
             <div class="project-meta">${jobs.length} job${jobs.length!==1?'s':''} &middot; ${totalPts} pts total</div>
           </div>
         </div>
