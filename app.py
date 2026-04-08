@@ -534,29 +534,51 @@ function showMapView(title){
   renderFilterBar();
 }
 
+let visiblePts = [];
+let currentPopupIdx = 0;
+
+function buildPopupHtml(p, idx, total){
+  const color = codeColor(p.code);
+  const rows = [`<div class="pop-title" style="color:${color}">${p.name}</div>`,
+                `<b>Code:</b> ${p.code}`];
+  if(p.ts) rows.push(`<b>Time:</b> ${p.ts.replace('T',' ')}`);
+  rows.push(`<b>Elev:</b> ${p.elev.toFixed(3)} m`);
+  if(p.horiz){
+    try{ rows.push(`<b>Precision H/V:</b> ${parseFloat(p.horiz).toFixed(4)} / ${parseFloat(p.vert).toFixed(4)} m`); }catch(e){}
+  }
+  if(p.attrs && Object.keys(p.attrs).length){
+    rows.push('<hr/>');
+    Object.entries(p.attrs).forEach(([k,v])=>rows.push(`<b>${k}:</b> ${v}`));
+  }
+  const nav = `<div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb">
+    <button onclick="navigatePoint(${idx-1})" style="background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:14px" ${idx===0?'disabled style="opacity:.3;background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;font-size:14px"':''}>&#8592;</button>
+    <span style="font-size:11px;color:#6b7280">${idx+1} of ${total}</span>
+    <button onclick="navigatePoint(${idx+1})" style="background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:14px" ${idx===total-1?'disabled style="opacity:.3;background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;font-size:14px"':''}>&#8594;</button>
+  </div>`;
+  return rows.join('<br/>') + nav;
+}
+
+function navigatePoint(idx){
+  if(idx < 0 || idx >= visiblePts.length) return;
+  currentPopupIdx = idx;
+  const m = markers[idx];
+  const p = visiblePts[idx];
+  MAP.setView([p.lat, p.lon], Math.max(MAP.getZoom(), 18));
+  m.setPopupContent(buildPopupHtml(p, idx, visiblePts.length));
+  m.openPopup();
+}
+
 function plotPoints(){
   markers.forEach(m=>MAP.removeLayer(m));
   markers = [];
+  visiblePts = currentPoints.filter(p=> activeFilters[p.code] !== false);
+  if(!visiblePts.length) return;
 
-  const pts = currentPoints.filter(p=> activeFilters[p.code] !== false);
-  if(!pts.length) return;
-
-  pts.forEach(p=>{
-    const color = codeColor(p.code);
-    const rows = [`<div class="pop-title" style="color:${color}">${p.name}</div>`,
-                  `<b>Code:</b> ${p.code}`];
-    if(p.ts) rows.push(`<b>Time:</b> ${p.ts.replace('T',' ')}`);
-    rows.push(`<b>Elev:</b> ${p.elev.toFixed(3)} m`);
-    if(p.horiz){
-      try{ rows.push(`<b>Precision H/V:</b> ${parseFloat(p.horiz).toFixed(4)} / ${parseFloat(p.vert).toFixed(4)} m`); }catch(e){}
-    }
-    if(p.attrs && Object.keys(p.attrs).length){
-      rows.push('<hr/>');
-      Object.entries(p.attrs).forEach(([k,v])=>rows.push(`<b>${k}:</b> ${v}`));
-    }
+  visiblePts.forEach((p, idx)=>{
     const m = L.marker([p.lat, p.lon], {icon: makeIcon(p.code)})
-      .bindPopup(rows.join('<br/>'), {maxWidth:280})
+      .bindPopup(buildPopupHtml(p, idx, visiblePts.length), {maxWidth:300})
       .addTo(MAP);
+    m.on('popupopen', ()=>{ currentPopupIdx = idx; });
     markers.push(m);
   });
 
