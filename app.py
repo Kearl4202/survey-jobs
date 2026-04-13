@@ -8,14 +8,34 @@ from pyproj import Transformer
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'survey-secret-change-me-2024')
-DATA_FILE = os.path.join(os.path.dirname(__file__), 'data', 'projects.json')
+DATA_FILE  = os.path.join(os.path.dirname(__file__), 'data', 'projects.json')
+LOG_FILE   = os.path.join(os.path.dirname(__file__), 'data', 'activity.json')
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
 
-# ── auth ───────────────────────────────────────────────────────────────────
 APP_PASSWORD = os.environ.get('APP_PASSWORD', 'survey123')
 
+# ── activity log ───────────────────────────────────────────────────────────
+def load_log():
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            return json.load(f)
+    return []
+
+def write_log(action, detail=''):
+    log = load_log()
+    log.insert(0, {
+        'ts':     datetime.now().strftime('%b %d  %I:%M%p'),
+        'email':  session.get('email', 'unknown'),
+        'action': action,
+        'detail': detail
+    })
+    log = log[:500]  # keep last 500 entries
+    with open(LOG_FILE, 'w') as f:
+        json.dump(log, f, indent=2)
+
+# ── auth ───────────────────────────────────────────────────────────────────
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -30,16 +50,29 @@ def login_required(f):
 def login():
     error = ''
     if request.method == 'POST':
-        if request.form.get('password') == APP_PASSWORD:
+        email    = request.form.get('email', '').strip().lower()
+        password = request.form.get('password', '')
+        if not email or '@' not in email:
+            error = 'Please enter a valid email address'
+        elif password != APP_PASSWORD:
+            error = 'Wrong password — try again'
+        else:
             session['logged_in'] = True
+            session['email'] = email
+            write_log('signed in')
             return redirect('/')
-        error = 'Wrong password — try again'
     return render_template_string(LOGIN_HTML, error=error)
 
 @app.route('/logout')
 def logout():
+    write_log('signed out')
     session.clear()
     return redirect('/login')
+
+@app.route('/api/log')
+@login_required
+def api_log():
+    return jsonify(load_log())
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -245,10 +278,13 @@ def api_upload():
     job_id = fname  # use full filename so each file is always a unique card
     data[project_id]['jobs'][job_id] = {
         'filename': fname, 'uploaded': datetime.now().isoformat(),
+        'uploaded_by': session.get('email', 'unknown'),
         'point_count': len(points), 'code_counts': code_counts,
-        'line_names': line_names, 'epsg': epsg, 'points': points
+        'line_names': line_names, 'epsg': epsg, 'points': points,
+        'deleted': False, 'deleted_by': None, 'deleted_at': None
     }
     save_data(data)
+    write_log('uploaded', f'{fname} → {project_id} ({len(points)} pts)')
     total = sum(j['point_count'] for j in data[project_id]['jobs'].values())
     return jsonify({'project_id': project_id, 'job_id': job_id,
                     'point_count': len(points), 'project_total': total,
@@ -265,6 +301,7 @@ def api_kmz_project(project_id):
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('doc.kml', kml.encode('utf-8'))
     buf.seek(0)
+    write_log('downloaded KMZ', f'{project_id} (full project)')
     return send_file(buf, mimetype='application/vnd.google-earth.kmz',
                      as_attachment=True, download_name=f'{project_id}.kmz')
 
@@ -280,6 +317,7 @@ def api_kmz_job(project_id, job_id):
         zf.writestr('doc.kml', kml.encode('utf-8'))
     buf.seek(0)
     safe = re.sub(r'[^A-Za-z0-9_.-]', '_', job_id)
+    write_log('downloaded KMZ', f'{job_id}')
     return send_file(buf, mimetype='application/vnd.google-earth.kmz',
                      as_attachment=True, download_name=f'{safe}.kmz')
 
@@ -288,11 +326,13 @@ def api_kmz_job(project_id, job_id):
 def api_delete_job(project_id, job_id):
     data = load_data()
     if project_id in data and job_id in data[project_id].get('jobs', {}):
+        write_log('deleted', job_id)
         del data[project_id]['jobs'][job_id]
         if not data[project_id]['jobs']:
             del data[project_id]
         save_data(data)
     return jsonify({'ok': True})
+
 
 LOGIN_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -309,11 +349,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .logo h1{font-size:20px;font-weight:700;color:#1a1a2e}
 .logo p{font-size:13px;color:#6b7280;margin-top:3px}
 label{display:block;font-size:13px;font-weight:500;color:#374151;margin-bottom:5px}
-input[type=password]{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;font-size:15px;outline:none;margin-bottom:16px}
-input[type=password]:focus{border-color:#2a7de1}
+input{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;font-size:15px;outline:none;margin-bottom:14px}
+input:focus{border-color:#2a7de1}
 button{width:100%;background:#1a2332;color:#fff;border:none;border-radius:8px;padding:12px;font-size:15px;font-weight:600;cursor:pointer}
 button:active{opacity:.9}
-.error{color:#dc2626;font-size:13px;margin-bottom:12px;text-align:center}
+.error{color:#dc2626;font-size:13px;margin-bottom:12px;text-align:center;background:#fef2f2;padding:8px;border-radius:8px}
 </style>
 </head>
 <body>
@@ -325,8 +365,10 @@ button:active{opacity:.9}
   </div>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="POST">
-    <label>Password</label>
-    <input type="password" name="password" placeholder="Enter password" autofocus>
+    <label>Your Email</label>
+    <input type="email" name="email" placeholder="you@example.com" autofocus autocomplete="email">
+    <label>Crew Password</label>
+    <input type="password" name="password" placeholder="Enter crew password" autocomplete="current-password">
     <button type="submit">Sign In</button>
   </form>
 </div>
@@ -348,6 +390,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .back-btn{background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;padding:0 4px;line-height:1}
 .topbar h1{font-size:16px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .logout-btn{background:none;border:1px solid #ffffff33;color:#aaa;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap}
+.log-btn{background:none;border:1px solid #ffffff33;color:#aaa;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap}
 .upload-btn{background:#2a7de1;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;flex-shrink:0}
 
 /* ── LIST VIEW ── */
@@ -416,6 +459,7 @@ input[type=file]{display:none}
   <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
     + Upload <span class="spinner" id="spinner"></span>
   </button>
+  <button class="log-btn" id="logBtn" onclick="showLog()">Log</button>
   <button class="logout-btn" id="logoutBtn" onclick="window.location='/logout'">Sign out</button>
 </div>
 
@@ -434,6 +478,11 @@ input[type=file]{display:none}
   <div class="map-toolbar">
     <button class="map-btn locate-btn" onclick="locateMe()" title="Find me">&#x2316;</button>
   </div>
+</div>
+
+<!-- LOG -->
+<div id="logView" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+  <div style="flex:1;overflow-y:auto;padding:10px" id="logScroll"></div>
 </div>
 
 <input type="file" id="fileInput" accept=".jxl,.jobxml,.xml" multiple onchange="uploadFiles(this.files)">
@@ -526,10 +575,12 @@ function renderList(){
       const lines = job.line_names&&job.line_names.length
         ? `<div class="job-lines">&#128205; ${job.line_names.join(', ')}</div>` : '';
       const safeJid = encodeURIComponent(jid);
+      const uploader = job.uploaded_by ? `<div class="job-date" style="color:#9ca3af">&#128100; ${job.uploaded_by}</div>` : '';
       return `<div class="job-card">
         <div class="job-info" onclick="openJobMap('${pid}','${safeJid}')">
           <div class="job-name">${jid}</div>
           <div class="job-date">${fmtDate(job.uploaded)} &middot; ${job.point_count} pts</div>
+          ${uploader}
           ${lines}
           <div class="badges">${badges}</div>
         </div>
@@ -599,9 +650,11 @@ async function openJobMap(pid, jobIdEncoded){
 
 function showMapView(title){
   document.getElementById('listView').style.display = 'none';
+  document.getElementById('logView').style.display = 'none';
   document.getElementById('mapView').style.display = 'flex';
   document.getElementById('backBtn').style.display = 'block';
   document.getElementById('uploadBtn').style.display = 'none';
+  document.getElementById('logBtn').style.display = 'none';
   document.getElementById('logoutBtn').style.display = 'none';
   document.getElementById('topTitle').textContent = title;
   if(!MAP){
@@ -717,9 +770,11 @@ function locateMe(){
 
 function showList(){
   document.getElementById('mapView').style.display = 'none';
+  document.getElementById('logView').style.display = 'none';
   document.getElementById('listView').style.display = 'flex';
   document.getElementById('backBtn').style.display = 'none';
   document.getElementById('uploadBtn').style.display = 'block';
+  document.getElementById('logBtn').style.display = 'block';
   document.getElementById('logoutBtn').style.display = 'block';
   document.getElementById('topTitle').textContent = 'Survey Jobs';
 }
@@ -751,6 +806,29 @@ function dlJobKmz(pid,jid){
   window.location.href=`/api/kmz/${encodeURIComponent(pid)}/${encodeURIComponent(jid)}`;
   toast('Downloading job KMZ...');
 }
+async function showLog(){
+  document.getElementById('listView').style.display = 'none';
+  document.getElementById('mapView').style.display = 'none';
+  document.getElementById('logView').style.display = 'flex';
+  document.getElementById('backBtn').style.display = 'block';
+  document.getElementById('uploadBtn').style.display = 'none';
+  document.getElementById('logBtn').style.display = 'none';
+  document.getElementById('logoutBtn').style.display = 'none';
+  document.getElementById('topTitle').textContent = 'Activity Log';
+  const r = await fetch('/api/log');
+  const log = await r.json();
+  const el = document.getElementById('logScroll');
+  if(!log.length){ el.innerHTML='<div class="empty"><p>No activity yet</p></div>'; return; }
+  el.innerHTML = log.map(e=>`
+    <div style="display:flex;gap:10px;padding:10px 4px;border-bottom:1px solid #f3f4f6;align-items:flex-start">
+      <div style="min-width:120px;font-size:11px;color:#9ca3af;padding-top:1px">${e.ts}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500;color:#374151">${e.email}</div>
+        <div style="font-size:12px;color:#6b7280">${e.action}${e.detail?' — <span style="color:#374151">'+e.detail+'</span>':''}</div>
+      </div>
+    </div>`).join('');
+}
+
 async function delProject(pid){
   if(!confirm(`Delete entire project ${pid} and all its jobs?`)) return;
   const jobs = Object.keys(DB[pid]?.jobs||{});
