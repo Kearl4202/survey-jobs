@@ -1,14 +1,45 @@
 import os, json, zipfile, re, io
 from datetime import datetime
-from flask import Flask, request, jsonify, send_file, render_template_string
+from functools import wraps
+from flask import Flask, request, jsonify, send_file, render_template_string, session, redirect
+
 import xml.etree.ElementTree as ET
 from pyproj import Transformer
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'survey-secret-change-me-2024')
 DATA_FILE = os.path.join(os.path.dirname(__file__), 'data', 'projects.json')
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+
+# ── auth ───────────────────────────────────────────────────────────────────
+APP_PASSWORD = os.environ.get('APP_PASSWORD', 'survey123')
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('logged_in'):
+            if request.is_json or request.path.startswith('/api/'):
+                return jsonify({'error': 'Unauthorized'}), 401
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = ''
+    if request.method == 'POST':
+        if request.form.get('password') == APP_PASSWORD:
+            session['logged_in'] = True
+            return redirect('/')
+        error = 'Wrong password — try again'
+    return render_template_string(LOGIN_HTML, error=error)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -169,14 +200,17 @@ def build_project_kmz(project_id, data, job_id=None):
     return '\n'.join(lines)
 
 @app.route('/')
+@login_required
 def index():
     return render_template_string(HTML)
 
 @app.route('/api/projects')
+@login_required
 def api_projects():
     return jsonify(load_data())
 
 @app.route('/api/job/<project_id>/<path:job_id>')
+@login_required
 def api_job(project_id, job_id):
     data = load_data()
     proj = data.get(project_id, {})
@@ -186,6 +220,7 @@ def api_job(project_id, job_id):
     return jsonify(job)
 
 @app.route('/api/upload', methods=['POST'])
+@login_required
 def api_upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file'}), 400
@@ -220,6 +255,7 @@ def api_upload():
                     'code_counts': code_counts, 'line_names': line_names})
 
 @app.route('/api/kmz/<project_id>')
+@login_required
 def api_kmz_project(project_id):
     data = load_data()
     if project_id not in data:
@@ -233,6 +269,7 @@ def api_kmz_project(project_id):
                      as_attachment=True, download_name=f'{project_id}.kmz')
 
 @app.route('/api/kmz/<project_id>/<path:job_id>')
+@login_required
 def api_kmz_job(project_id, job_id):
     data = load_data()
     if project_id not in data:
@@ -247,6 +284,7 @@ def api_kmz_job(project_id, job_id):
                      as_attachment=True, download_name=f'{safe}.kmz')
 
 @app.route('/api/delete/<project_id>/<path:job_id>', methods=['DELETE'])
+@login_required
 def api_delete_job(project_id, job_id):
     data = load_data()
     if project_id in data and job_id in data[project_id].get('jobs', {}):
@@ -255,6 +293,45 @@ def api_delete_job(project_id, job_id):
             del data[project_id]
         save_data(data)
     return jsonify({'ok': True})
+
+LOGIN_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Survey Jobs — Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#fff;border-radius:16px;padding:36px 28px;width:100%;max-width:340px;box-shadow:0 2px 16px rgba(0,0,0,.08)}
+.logo{text-align:center;margin-bottom:28px}
+.logo-icon{width:56px;height:56px;background:#1a2332;border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:26px}
+.logo h1{font-size:20px;font-weight:700;color:#1a1a2e}
+.logo p{font-size:13px;color:#6b7280;margin-top:3px}
+label{display:block;font-size:13px;font-weight:500;color:#374151;margin-bottom:5px}
+input[type=password]{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;font-size:15px;outline:none;margin-bottom:16px}
+input[type=password]:focus{border-color:#2a7de1}
+button{width:100%;background:#1a2332;color:#fff;border:none;border-radius:8px;padding:12px;font-size:15px;font-weight:600;cursor:pointer}
+button:active{opacity:.9}
+.error{color:#dc2626;font-size:13px;margin-bottom:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">📡</div>
+    <h1>Survey Jobs</h1>
+    <p>Pipeline Survey Management</p>
+  </div>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="POST">
+    <label>Password</label>
+    <input type="password" name="password" placeholder="Enter password" autofocus>
+    <button type="submit">Sign In</button>
+  </form>
+</div>
+</body>
+</html>"""
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -270,6 +347,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .topbar{background:#1a2332;color:#fff;padding:12px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;z-index:200}
 .back-btn{background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;padding:0 4px;line-height:1}
 .topbar h1{font-size:16px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.logout-btn{background:none;border:1px solid #ffffff33;color:#aaa;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap}
 .upload-btn{background:#2a7de1;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;flex-shrink:0}
 
 /* ── LIST VIEW ── */
@@ -338,6 +416,7 @@ input[type=file]{display:none}
   <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
     + Upload <span class="spinner" id="spinner"></span>
   </button>
+  <button class="logout-btn" id="logoutBtn" onclick="window.location='/logout'">Sign out</button>
 </div>
 
 <!-- LIST -->
@@ -523,6 +602,7 @@ function showMapView(title){
   document.getElementById('mapView').style.display = 'flex';
   document.getElementById('backBtn').style.display = 'block';
   document.getElementById('uploadBtn').style.display = 'none';
+  document.getElementById('logoutBtn').style.display = 'none';
   document.getElementById('topTitle').textContent = title;
   if(!MAP){
     MAP = L.map('map', {zoomControl:true});
@@ -640,6 +720,7 @@ function showList(){
   document.getElementById('listView').style.display = 'flex';
   document.getElementById('backBtn').style.display = 'none';
   document.getElementById('uploadBtn').style.display = 'block';
+  document.getElementById('logoutBtn').style.display = 'block';
   document.getElementById('topTitle').textContent = 'Survey Jobs';
 }
 
