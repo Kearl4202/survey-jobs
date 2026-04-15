@@ -428,10 +428,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 #map{flex:1;z-index:1}
 .map-toolbar{position:absolute;bottom:16px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:400}
 .map-btn{width:44px;height:44px;border-radius:22px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.map-btn.active{background:#1a2332!important;color:#fff!important}
 .locate-btn{background:#2a7de1;color:#fff}
-.filter-bar{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;z-index:400}
+.filter-bar{display:flex;gap:6px;flex-wrap:wrap}
 .filter-pill{font-size:11px;padding:4px 10px;border-radius:12px;border:1.5px solid transparent;cursor:pointer;font-weight:500;opacity:.4;transition:opacity .15s}
 .filter-pill.on{opacity:1}
+.search-result-item{padding:10px 14px;border-bottom:1px solid #f3f4f6;cursor:pointer;font-size:13px}
+.search-result-item:last-child{border-bottom:none}
+.search-result-item:active{background:#f9fafb}
 
 /* popup */
 .leaflet-popup-content{font-size:13px;line-height:1.6;min-width:200px}
@@ -473,10 +477,26 @@ input[type=file]{display:none}
 
 <!-- MAP -->
 <div id="mapView">
-  <div class="filter-bar" id="filterBar"></div>
+  <div style="position:absolute;top:8px;left:8px;right:8px;z-index:400;display:flex;flex-direction:column;gap:6px">
+    <div style="display:flex;gap:6px">
+      <div style="flex:1;display:flex;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.2);overflow:hidden">
+        <input type="text" id="mapSearch" placeholder="Search point number..." oninput="searchPoint(this.value)"
+          style="flex:1;border:none;outline:none;padding:8px 12px;font-size:13px;background:transparent">
+        <button onclick="clearMapSearch()" style="border:none;background:transparent;padding:0 10px;color:#9ca3af;font-size:16px;cursor:pointer">&#x2715;</button>
+      </div>
+    </div>
+    <div class="filter-bar" id="filterBar"></div>
+    <div id="searchResults" style="display:none;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.2);overflow:hidden;max-height:180px;overflow-y:auto"></div>
+  </div>
   <div id="map"></div>
   <div class="map-toolbar">
     <button class="map-btn locate-btn" onclick="locateMe()" title="Find me">&#x2316;</button>
+    <button class="map-btn" id="satelliteBtn" onclick="toggleSatellite()" title="Satellite" style="background:#fff;color:#1a2332;font-size:14px;font-weight:600">SAT</button>
+    <button class="map-btn" id="measureBtn" onclick="toggleMeasure()" title="Measure distance" style="background:#fff;color:#1a2332;font-size:20px">&#x21B9;</button>
+  </div>
+  <div id="measureBar" style="display:none;position:absolute;bottom:80px;left:12px;right:12px;background:#1a2332;color:#fff;border-radius:10px;padding:10px 14px;z-index:400;font-size:13px;display:none;align-items:center;justify-content:space-between">
+    <span id="measureTxt">Tap two points to measure</span>
+    <button onclick="clearMeasure()" style="background:none;border:1px solid #ffffff44;color:#fff;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer">Clear</button>
   </div>
 </div>
 
@@ -657,12 +677,16 @@ function showMapView(title){
   document.getElementById('logBtn').style.display = 'none';
   document.getElementById('logoutBtn').style.display = 'none';
   document.getElementById('topTitle').textContent = title;
+  document.getElementById('mapSearch').value = '';
+  document.getElementById('searchResults').style.display = 'none';
   if(!MAP){
     MAP = L.map('map', {zoomControl:true});
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-      attribution:'&copy; OpenStreetMap',maxZoom:22
-    }).addTo(MAP);
+    initLayers();
   }
+  // reset measure
+  if(measuring){ measuring=false; MAP.off('click',onMeasureClick); clearMeasure(); }
+  document.getElementById('measureBtn').classList.remove('active');
+  document.getElementById('measureBar').style.display = 'none';
   plotPoints();
   renderFilterBar();
 }
@@ -766,6 +790,107 @@ function locateMe(){
   }, err=>{
     toast('Could not get location — check browser permissions');
   },{enableHighAccuracy:true,timeout:10000});
+}
+
+// ── satellite toggle ────────────────────────────────────────────────────────
+let streetLayer = null;
+let satLayer = null;
+let isSat = false;
+
+function initLayers(){
+  streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'&copy; OpenStreetMap', maxZoom:22
+  });
+  satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    attribution:'&copy; Esri', maxZoom:22
+  });
+  streetLayer.addTo(MAP);
+}
+
+function toggleSatellite(){
+  isSat = !isSat;
+  if(isSat){
+    MAP.removeLayer(streetLayer);
+    satLayer.addTo(MAP);
+  } else {
+    MAP.removeLayer(satLayer);
+    streetLayer.addTo(MAP);
+  }
+  document.getElementById('satelliteBtn').classList.toggle('active', isSat);
+}
+
+// ── measure tool ────────────────────────────────────────────────────────────
+let measuring = false;
+let measurePts = [];
+let measureLayers = [];
+
+function toggleMeasure(){
+  measuring = !measuring;
+  document.getElementById('measureBtn').classList.toggle('active', measuring);
+  const bar = document.getElementById('measureBar');
+  bar.style.display = measuring ? 'flex' : 'none';
+  if(!measuring){ clearMeasure(); return; }
+  document.getElementById('measureTxt').textContent = 'Tap the map to start measuring';
+  MAP.on('click', onMeasureClick);
+}
+
+function onMeasureClick(e){
+  if(!measuring) return;
+  measurePts.push(e.latlng);
+  const dot = L.circleMarker(e.latlng, {radius:5, color:'#ff6b00', fillColor:'#ff6b00', fillOpacity:1, weight:2}).addTo(MAP);
+  measureLayers.push(dot);
+  if(measurePts.length >= 2){
+    const line = L.polyline(measurePts, {color:'#ff6b00', weight:2, dashArray:'6 4'}).addTo(MAP);
+    measureLayers.push(line);
+    const d = totalDist(measurePts);
+    const ft = (d * 3.28084).toFixed(1);
+    const m  = d.toFixed(1);
+    document.getElementById('measureTxt').textContent = `${ft} ft  (${m} m)`;
+  } else {
+    document.getElementById('measureTxt').textContent = 'Tap a second point';
+  }
+}
+
+function totalDist(pts){
+  let d = 0;
+  for(let i=1;i<pts.length;i++) d += pts[i-1].distanceTo(pts[i]);
+  return d;
+}
+
+function clearMeasure(){
+  measureLayers.forEach(l=>MAP.removeLayer(l));
+  measureLayers = []; measurePts = [];
+  if(measuring) document.getElementById('measureTxt').textContent = 'Tap the map to start measuring';
+}
+
+// ── point search ────────────────────────────────────────────────────────────
+function searchPoint(q){
+  const res = document.getElementById('searchResults');
+  if(!q.trim()){ res.style.display='none'; return; }
+  const matches = visiblePts.filter(p=>
+    p.name.toLowerCase().includes(q.toLowerCase())
+  ).slice(0, 8);
+  if(!matches.length){ res.style.display='none'; return; }
+  res.style.display = 'block';
+  res.innerHTML = matches.map((p,i)=>{
+    const color = codeColor(p.code);
+    const idx = visiblePts.indexOf(p);
+    return `<div class="search-result-item" onclick="jumpToPoint(${idx})">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:8px;vertical-align:middle"></span>
+      <b>${p.name}</b> <span style="color:#9ca3af;font-size:11px;margin-left:6px">${p.code}</span>
+    </div>`;
+  }).join('');
+}
+
+function jumpToPoint(idx){
+  document.getElementById('searchResults').style.display = 'none';
+  document.getElementById('mapSearch').value = '';
+  navigatePoint(idx);
+}
+
+function clearMapSearch(){
+  document.getElementById('mapSearch').value = '';
+  document.getElementById('searchResults').style.display = 'none';
 }
 
 function showList(){
