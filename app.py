@@ -709,11 +709,20 @@ function buildPopupHtml(p, idx, total){
     rows.push('<hr/>');
     Object.entries(p.attrs).forEach(([k,v])=>rows.push(`<b>${k}:</b> ${v}`));
   }
+  const isApple = /iPhone|iPad|iPod|Mac/.test(navigator.userAgent);
+  const navUrl = isApple
+    ? `maps://maps.apple.com/?daddr=${p.lat},${p.lon}`
+    : `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}`;
+  const navLabel = isApple ? '&#x1F6A7; Navigate in Apple Maps' : '&#x1F6A7; Navigate in Google Maps';
   const nav = `<div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb">
     <button onclick="navigatePoint(${idx-1})" style="background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:14px" ${idx===0?'disabled style="opacity:.3;background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;font-size:14px"':''}>&#8592;</button>
     <span style="font-size:11px;color:#6b7280">${idx+1} of ${total}</span>
     <button onclick="navigatePoint(${idx+1})" style="background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:14px" ${idx===total-1?'disabled style="opacity:.3;background:#f3f4f6;border:none;border-radius:6px;padding:4px 10px;font-size:14px"':''}>&#8594;</button>
-  </div>`;
+  </div>
+  <a href="${navUrl}" target="_blank"
+    style="display:block;margin-top:8px;background:#1a73e8;color:#fff;text-align:center;padding:8px;border-radius:8px;font-size:13px;font-weight:500;text-decoration:none">
+    ${navLabel}
+  </a>`;
   return rows.join('<br/>') + nav;
 }
 
