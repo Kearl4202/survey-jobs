@@ -491,6 +491,7 @@ input[type=file]{display:none}
   <div id="map"></div>
   <div class="map-toolbar">
     <button class="map-btn locate-btn" onclick="locateMe()" title="Find me">&#x2316;</button>
+    <button class="map-btn" id="fitBtn" onclick="fitPoints()" title="Zoom to all points" style="background:#fff;color:#1a2332;font-size:18px;display:none">&#x26F6;</button>
     <button class="map-btn" id="satelliteBtn" onclick="toggleSatellite()" title="Satellite" style="background:#fff;color:#1a2332;font-size:14px;font-weight:600">SAT</button>
     <button class="map-btn" id="measureBtn" onclick="toggleMeasure()" title="Measure distance" style="background:#fff;color:#1a2332;font-size:20px">&#x21B9;</button>
   </div>
@@ -687,6 +688,7 @@ function showMapView(title){
   if(measuring){ measuring=false; MAP.off('click',onMeasureClick); clearMeasure(); }
   document.getElementById('measureBtn').classList.remove('active');
   document.getElementById('measureBar').style.display = 'none';
+  document.getElementById('fitBtn').style.display = 'none';
   plotPoints();
   renderFilterBar();
 }
@@ -786,10 +788,18 @@ function locateMe(){
       icon: L.divIcon({html:svg,className:'',iconSize:[20,20],iconAnchor:[10,10]})
     }).addTo(MAP).bindPopup('You are here');
     MAP.setView([lat,lon], 17);
+    document.getElementById('fitBtn').style.display = 'flex';
     toast('Found you!');
   }, err=>{
     toast('Could not get location — check browser permissions');
   },{enableHighAccuracy:true,timeout:10000});
+}
+
+function fitPoints(){
+  if(!markers.length) return;
+  const group = L.featureGroup(markers);
+  MAP.fitBounds(group.getBounds().pad(0.15));
+  document.getElementById('fitBtn').style.display = 'none';
 }
 
 // ── satellite toggle ────────────────────────────────────────────────────────
