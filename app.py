@@ -747,6 +747,12 @@ function plotPoints(){
       .bindPopup(buildPopupHtml(p, idx, visiblePts.length), {maxWidth:300})
       .addTo(MAP);
     m.on('popupopen', ()=>{ currentPopupIdx = idx; });
+    m.on('click', (e)=>{
+      if(measuring){
+        L.DomEvent.stopPropagation(e);
+        onMeasureSnap({lat: p.lat, lng: p.lon}, p.name);
+      }
+    });
     markers.push(m);
   });
 
@@ -848,26 +854,47 @@ function toggleMeasure(){
   document.getElementById('measureBtn').classList.toggle('active', measuring);
   const bar = document.getElementById('measureBar');
   bar.style.display = measuring ? 'flex' : 'none';
-  if(!measuring){ clearMeasure(); return; }
-  document.getElementById('measureTxt').textContent = 'Tap the map to start measuring';
+  if(!measuring){ clearMeasure(); MAP.off('click', onMeasureClick); return; }
+  document.getElementById('measureTxt').textContent = 'Tap a point or anywhere on map';
   MAP.on('click', onMeasureClick);
+  // also hook into marker clicks when measuring
+  markers.forEach((m, idx)=>{
+    m.on('click', (e)=>{
+      if(!measuring) return;
+      L.DomEvent.stopPropagation(e);
+      const p = visiblePts[idx];
+      onMeasureSnap({lat: p.lat, lng: p.lon}, p.name);
+    });
+  });
 }
 
-function onMeasureClick(e){
-  if(!measuring) return;
-  measurePts.push(e.latlng);
-  const dot = L.circleMarker(e.latlng, {radius:5, color:'#ff6b00', fillColor:'#ff6b00', fillOpacity:1, weight:2}).addTo(MAP);
+let lastSnapTime = 0;
+
+function onMeasureSnap(latlng, label){
+  lastSnapTime = Date.now();
+  measurePts.push(L.latLng(latlng.lat, latlng.lng));
+  const dot = L.circleMarker([latlng.lat, latlng.lng],
+    {radius:6, color:'#ff6b00', fillColor:'#ff6b00', fillOpacity:1, weight:2})
+    .bindTooltip(label||'', {permanent:true, direction:'top', offset:[0,-8],
+      className:'', opacity:1})
+    .addTo(MAP);
   measureLayers.push(dot);
   if(measurePts.length >= 2){
-    const line = L.polyline(measurePts, {color:'#ff6b00', weight:2, dashArray:'6 4'}).addTo(MAP);
+    const line = L.polyline(measurePts, {color:'#ff6b00', weight:2.5, dashArray:'6 4'}).addTo(MAP);
     measureLayers.push(line);
     const d = totalDist(measurePts);
     const ft = (d * 3.28084).toFixed(1);
     const m  = d.toFixed(1);
-    document.getElementById('measureTxt').textContent = `${ft} ft  (${m} m)`;
+    document.getElementById('measureTxt').textContent = `${ft} ft  (${m} m)  — ${measurePts.length} pts`;
   } else {
-    document.getElementById('measureTxt').textContent = 'Tap a second point';
+    document.getElementById('measureTxt').textContent = 'Tap another point or spot';
   }
+}
+
+function onMeasureClick(e){
+  if(!measuring) return;
+  if(Date.now() - lastSnapTime < 300) return; // pin tap already handled it
+  onMeasureSnap(e.latlng, '');
 }
 
 function totalDist(pts){
