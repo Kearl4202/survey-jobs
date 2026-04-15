@@ -426,7 +426,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 /* ── MAP VIEW ── */
 #mapView{flex:1;display:none;flex-direction:column;position:relative}
 #map{flex:1;z-index:1}
-.map-toolbar{position:absolute;bottom:16px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:400}
+.map-toolbar{position:absolute;bottom:80px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:400}
 .map-btn{width:44px;height:44px;border-radius:22px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
 .map-btn.active{background:#1a2332!important;color:#fff!important}
 .locate-btn{background:#2a7de1;color:#fff}
@@ -495,7 +495,7 @@ input[type=file]{display:none}
     <button class="map-btn" id="satelliteBtn" onclick="toggleSatellite()" title="Satellite" style="background:#fff;color:#1a2332;font-size:14px;font-weight:600">SAT</button>
     <button class="map-btn" id="measureBtn" onclick="toggleMeasure()" title="Measure distance" style="background:#fff;color:#1a2332;font-size:20px">&#x21B9;</button>
   </div>
-  <div id="measureBar" style="display:none;position:absolute;bottom:80px;left:12px;right:12px;background:#1a2332;color:#fff;border-radius:10px;padding:10px 14px;z-index:400;font-size:13px;display:none;align-items:center;justify-content:space-between">
+  <div id="measureBar" style="display:none;position:absolute;bottom:140px;left:12px;right:12px;background:#1a2332;color:#fff;border-radius:10px;padding:10px 14px;z-index:400;display:none;align-items:center;justify-content:space-between">
     <span id="measureTxt">Tap two points to measure</span>
     <button onclick="clearMeasure()" style="background:none;border:1px solid #ffffff44;color:#fff;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer">Clear</button>
   </div>
